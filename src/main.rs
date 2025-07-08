@@ -12,8 +12,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("1) Download Mappings");
         println!("2) Download Minecraft-Server.jar");
         println!("3) Download Minecraft-Client.jar");
-        println!("4) Execute DataGenerator");
-        println!("5) Exit");
+        println!("4) Download Paper-Server.jar");
+        println!("5) Download Velocity-Server.jar");
+        println!("6) Execute DataGenerator");
+        println!("7) Exit");
 
         print!("Selection: ");
         io::stdout().flush()?;
@@ -22,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         io::stdin().read_line(&mut selection)?;
         let selection = selection.trim();
 
-        if selection == "5" {
+        if selection == "7" {
             println!("Exiting...");
             break;
         }
@@ -90,6 +92,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Client.jar downloaded into {}", client_path);
             }
             "4" => {
+                let paper_manifest_url = "https://gist.githubusercontent.com/osipxd/6119732e30059241c2192c4a8d2218d9/raw/471f25cc5c9ca724e6493ed5e266770d7d307621/paper-versions.json";
+                
+                let paper_manifest: PaperVersions = client
+                    .get(paper_manifest_url)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                
+                if let Some(paper_url) = paper_manifest.versions.get(version_id) {
+                    let paper_dir = format!("paper-versions/{}/", version_id);
+                    fs::create_dir_all(&paper_dir)?;
+                    
+                    let paper_path = format!("{}paper.jar", paper_dir);
+                    
+                    download_file(paper_url, &paper_path, &client).await?;
+                    
+                    println!("Paper.jar downloaded into {}", paper_path);
+                } else {
+                    println!("Paper.jar not found for this version '{}'.", version_id);  
+                }
+            }
+            "6" => {
                 let server_path = match fs::canonicalize(format!("server-versions/{}/server.jar", version_id)) {
                     Ok(path) => path,
                     Err(_) => {
@@ -139,6 +164,12 @@ async fn download_file(
 
     println!("Saved: {}", path);
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct PaperVersions {
+    latest: String,
+    versions: std::collections::HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
