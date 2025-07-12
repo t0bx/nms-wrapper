@@ -1,8 +1,10 @@
+use std::collections::{BTreeMap, HashSet};
 use reqwest::Client;
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::process::Command;
+use serde_json::Value;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("2) Download Minecraft-Server.jar");
         println!("3) Download Minecraft-Client.jar");
         println!("4) Download Paper-Server.jar");
-        println!("5) Download Velocity-Server.jar");
+        println!("5) Compare PacketIds");
         println!("6) Execute DataGenerator");
         println!("7) Exit");
 
@@ -27,6 +29,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if selection == "7" {
             println!("Exiting...");
             break;
+        }
+
+        if selection == "5" {
+            print!("What Minecraft Version? (Old) ");
+            io::stdout().flush()?;
+            let mut protocol_v1_version = String::new();
+            io::stdin().read_line(&mut protocol_v1_version)?;
+            let protocol_v1_version = protocol_v1_version.trim();
+
+            print!("What Minecraft Version? (New) ");
+            io::stdout().flush()?;
+            let mut protocol_v2_version = String::new();
+            io::stdin().read_line(&mut protocol_v2_version)?;
+            let protocol_v2_version = protocol_v2_version.trim();
+
+            let protocol_v1_path = format!("datagenerator/{}/generated/reports/packets.json", protocol_v1_version);
+            let protocol_v2_path = format!("datagenerator/{}/generated/reports/packets.json", protocol_v2_version);
+
+            let json_v1 = match fs::read_to_string(&protocol_v1_path) {
+                Ok(data) => data,
+                Err(_) => {
+                    println!("Could not read file: {}", protocol_v1_path);
+                    continue;
+                }
+            };
+
+            let json_v2 = match fs::read_to_string(&protocol_v2_path) {
+                Ok(data) => data,
+                Err(_) => {
+                    println!("Could not read file: {}", protocol_v2_path);
+                    continue;
+                }
+            };
+
+            let filter = ask_for_filter();
+
+            let v1: Value = serde_json::from_str(&json_v1)?;
+            let v2: Value = serde_json::from_str(&json_v2)?;
+
+            let map_v1 = extract_protocol_ids(&v1, vec![]);
+            let map_v2 = extract_protocol_ids(&v2, vec![]);
+
+            let keys_v1: HashSet<_> = map_v1.keys().collect();
+            let keys_v2: HashSet<_> = map_v2.keys().collect();
+            let all_keys: HashSet<_> = keys_v1.union(&keys_v2).collect();
+
+            println!();
+            println!("=== Differences from {} → {} ===", protocol_v1_version, protocol_v2_version);
+            println!();
+
+            let mut differences_found = false;
+
+            for key in all_keys {
+                if let Some(ref filter_set) = filter {
+                    if !filter_set.iter().any(|f| key.to_lowercase().contains(f)) {
+                        continue;
+                    }
+                }
+
+                let id_v1 = map_v1.get(*key);
+                let id_v2 = map_v2.get(*key);
+
+                match (id_v1, id_v2) {
+                    (Some(old_id), Some(new_id)) => {
+                        if old_id != new_id {
+                            println!(
+                                "{}: {} (0x{:X}) → {} (0x{:X})",
+                                key, old_id, old_id, new_id, new_id
+                            );
+                            differences_found = true;
+                        }
+                    }
+                    (None, Some(new_id)) => {
+                        println!(
+                            "{}: new → {} (0x{:X})",
+                            key, new_id, new_id
+                        );
+                        differences_found = true;
+                    }
+                    (Some(old_id), None) => {
+                        println!(
+                            "{}: removed (was {} / 0x{:X})",
+                            key, old_id, old_id
+                        );
+                        differences_found = true;
+                    }
+                    (None, None) => {}
+                }
+            }
+
+            if !differences_found {
+                println!("No differences found.");
+            }
+
+            println!();
+            continue;
         }
 
         print!("What Minecraft Version? ");
@@ -201,4 +299,59 @@ struct Downloads {
 #[derive(Deserialize)]
 struct DownloadUrl {
     url: String,
+}
+
+fn ask_for_filter() -> Option<HashSet<String>> {
+    print!("Do you want to compare specific packets only? (Yes/No): ");
+    io::stdout().flush().unwrap();
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).unwrap();
+    let answer = answer.trim().to_lowercase();
+
+    if answer == "yes" || answer == "y" {
+        match fs::read_to_string("filters.txt") {
+            Ok(content) => {
+                let filter_set = content
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect::<HashSet<_>>();
+                println!("Loaded {} filter(s)", filter_set.len());
+                Some(filter_set)
+            }
+            Err(_) => {
+                println!("Could not read 'filters.txt'. Showing all differences instead.");
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+fn extract_protocol_ids(value: &Value, path: Vec<String>) -> BTreeMap<String, u32> {
+    let mut map = BTreeMap::new();
+
+    match value {
+        Value::Object(obj) => {
+            if let Some(Value::Number(n)) = obj.get("protocol_id") {
+                if let Some(id) = n.as_u64() {
+                    let path_str = path.join(".");
+                    map.insert(path_str, id as u32);
+                }
+            }
+
+            for (k, v) in obj {
+                let mut new_path = path.clone();
+                new_path.push(k.clone());
+                let inner_map = extract_protocol_ids(v, new_path);
+                map.extend(inner_map);
+            }
+        }
+        _ => {
+        }
+    }
+
+    map
 }
